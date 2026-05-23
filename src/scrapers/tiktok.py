@@ -1,29 +1,27 @@
 """
-TikTok scraper implementation.
+TikTok scraper implementation with multi-source fallback.
 
-This module provides a scraper for fetching videos from TikTok user profiles
-using a third-party API service. It implements the BaseScraper interface
-and handles TikTok-specific data extraction and error handling.
+Uses a cascading strategy to fetch TikTok videos:
+  1. TikWM API via POST (CF sometimes allows POST through)
+  2. yt-dlp subprocess (battle-tested anti-bot bypass)
 
-Uses curl_cffi instead of httpx to bypass Cloudflare bot detection
-by impersonating a real Chrome browser TLS fingerprint.
+The fallback chain ensures reliability when the primary
+source is blocked by Cloudflare on datacenter IPs.
 """
 
 import os
 import logging
-from typing import Optional
-from curl_cffi.requests import AsyncSession
-from curl_cffi import CurlError
 import asyncio
 
 from .base import (
     BaseScraper,
     ScrapedVideo,
     ScraperAPIError,
-    ScraperRateLimitError,
     ScraperNotFoundError,
+    ScraperRateLimitError,
     ScraperTimeoutError,
 )
+from .tiktok_sources import try_tikwm_post, try_ytdlp
 
 
 logger = logging.getLogger(__name__)
@@ -31,307 +29,248 @@ logger = logging.getLogger(__name__)
 
 class TikTokScraper(BaseScraper):
     """
-    TikTok video scraper using Tikwm API.
-    
-    This scraper fetches videos from TikTok user profiles using the Tikwm
-    API (https://www.tikwm.com/api), which provides a free tier for fetching
-    TikTok video data without authentication.
-    
-    Features:
-    - Async HTTP requests using curl_cffi (Cloudflare bypass via TLS impersonation)
-    - Automatic retry with exponential backoff
-    - Rate limit handling
-    - Comprehensive error handling
-    - Standardized output format
-    
+    Multi-source TikTok scraper with automatic fallback.
+
+    Tries data sources in order of speed/reliability:
+      1. TikWM API via POST + curl_cffi Chrome impersonation
+      2. yt-dlp subprocess (works from datacenter IPs)
+
     Environment Variables:
-        TIKTOK_API_BASE_URL: Base URL for TikTok API (default: https://www.tikwm.com/api)
-        TIKTOK_API_TIMEOUT: Request timeout in seconds (default: 30)
-        TIKTOK_MAX_RETRIES: Maximum retry attempts (default: 3)
-    
+        TIKTOK_API_BASE_URL: TikWM base URL (default: tikwm.com)
+        TIKTOK_API_TIMEOUT: Per-strategy timeout secs (default: 30)
+        TIKTOK_MAX_RETRIES: Max retries per strategy (default: 3)
+        TIKTOK_YTDLP_TIMEOUT: yt-dlp timeout secs (default: 60)
+
     Example:
-        >>> scraper = TikTokScraper()
-        >>> videos = await scraper.fetch_latest_videos("charlidamelio", limit=5)
-        >>> print(f"Fetched {len(videos)} videos from TikTok")
+        >>> async with TikTokScraper() as scraper:
+        ...     videos = await scraper.fetch_latest_videos("user", 5)
     """
-    
+
     def __init__(self):
         """Initialize the TikTok scraper with configuration."""
-        self.api_base_url = os.getenv(
-            "TIKTOK_API_BASE_URL",
-            "https://www.tikwm.com/api"
-        )
         self.timeout = int(os.getenv("TIKTOK_API_TIMEOUT", "30"))
-        self.max_retries = int(os.getenv("TIKTOK_MAX_RETRIES", "3"))
-        
-        # Create async HTTP client with Chrome TLS impersonation
-        # This bypasses Cloudflare bot detection on tikwm.com
-        self.client = AsyncSession(
-            timeout=self.timeout,
-            impersonate="chrome",
+        self.ytdlp_timeout = int(
+            os.getenv("TIKTOK_YTDLP_TIMEOUT", "60")
         )
-    
+        self.max_retries = int(os.getenv("TIKTOK_MAX_RETRIES", "3"))
+
     def platform_name(self) -> str:
-        """
-        Return the platform identifier.
-        
-        Returns:
-            'tiktok'
-        """
+        """Return the platform identifier."""
         return "tiktok"
-    
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     async def fetch_latest_videos(
         self,
         username: str,
-        limit: int = 10
+        limit: int = 10,
     ) -> list[ScrapedVideo]:
         """
         Fetch the latest videos from a TikTok user profile.
-        
+
+        Tries each data source in order; the first one that
+        succeeds wins.  If all fail, raises with combined errors.
+
         Args:
             username: TikTok username (without @ symbol).
-            limit: Maximum number of videos to fetch (default: 10).
-        
+            limit: Maximum number of videos to fetch.
+
         Returns:
-            List of ScrapedVideo objects, ordered by creation date (newest first).
-        
+            List of ScrapedVideo objects (newest first).
+
         Raises:
-            ScraperAPIError: If the API returns an error response.
-            ScraperRateLimitError: If rate limit is exceeded.
-            ScraperNotFoundError: If the user profile is not found.
-            ScraperTimeoutError: If the request times out.
+            ScraperAPIError: If all sources fail.
+            ScraperNotFoundError: If the user does not exist.
         """
-        # Remove @ symbol if present
         username = username.lstrip("@")
-        
-        logger.info(f"Fetching latest {limit} videos for TikTok user: @{username}")
-        
-        try:
-            # Fetch user feed with retry logic
-            videos_data = await self._fetch_user_feed_with_retry(username, limit)
-            
-            # Parse and standardize video data
-            scraped_videos = []
-            for video_data in videos_data[:limit]:
-                try:
-                    scraped_video = self._parse_video_data(video_data, username)
-                    scraped_videos.append(scraped_video)
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to parse video data for @{username}: {e}",
-                        exc_info=True
-                    )
-                    continue
-            
-            logger.info(
-                f"Successfully fetched {len(scraped_videos)} videos "
-                f"for TikTok user: @{username}"
-            )
-            return scraped_videos
-            
-        except (ScraperAPIError, ScraperRateLimitError, ScraperNotFoundError, ScraperTimeoutError):
-            # Re-raise known scraper errors
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error fetching TikTok videos for @{username}: {e}")
-            raise ScraperAPIError(f"Failed to fetch TikTok videos: {str(e)}") from e
-    
-    async def _fetch_user_feed_with_retry(
-        self,
-        username: str,
-        limit: int
-    ) -> list[dict]:
-        """
-        Fetch user feed with exponential backoff retry logic.
-        
-        Args:
-            username: TikTok username.
-            limit: Number of videos to fetch.
-        
-        Returns:
-            List of video data dictionaries from the API.
-        
-        Raises:
-            ScraperAPIError: If all retries fail.
-            ScraperRateLimitError: If rate limited.
-            ScraperNotFoundError: If user not found.
-            ScraperTimeoutError: If request times out.
-        """
-        last_exception = None
-        
-        for attempt in range(self.max_retries):
+        logger.info(
+            f"Fetching latest {limit} videos for @{username}"
+        )
+
+        videos_data, source = await self._fetch_with_fallback(
+            username, limit
+        )
+
+        scraped: list[ScrapedVideo] = []
+        for v in videos_data[:limit]:
             try:
-                return await self._fetch_user_feed(username, limit)
-            except ScraperTimeoutError as e:
-                last_exception = e
-                if attempt < self.max_retries - 1:
-                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                    logger.warning(
-                        f"Timeout fetching TikTok feed for @{username}, "
-                        f"retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries})"
-                    )
-                    await asyncio.sleep(wait_time)
+                if source == "ytdlp":
+                    sv = self._parse_ytdlp_entry(v, username)
+                else:
+                    sv = self._parse_tikwm_entry(v, username)
+                scraped.append(sv)
+            except Exception as e:
+                logger.warning(
+                    f"Skipping unparseable video for @{username}: {e}"
+                )
                 continue
-            except (ScraperRateLimitError, ScraperNotFoundError, ScraperAPIError):
-                # Don't retry these errors
-                raise
-        
-        # All retries exhausted
-        raise last_exception or ScraperAPIError("Failed to fetch user feed after retries")
-    
-    async def _fetch_user_feed(self, username: str, limit: int) -> list[dict]:
-        """
-        Fetch user feed from the TikTok API.
-        
-        Args:
-            username: TikTok username.
-            limit: Number of videos to fetch.
-        
-        Returns:
-            List of video data dictionaries.
-        
-        Raises:
-            ScraperAPIError: If API returns an error.
-            ScraperRateLimitError: If rate limited.
-            ScraperNotFoundError: If user not found.
-            ScraperTimeoutError: If request times out.
-        """
-        url = f"{self.api_base_url}/user/posts"
-        params = {
-            "unique_id": username,
-            "count": min(limit, 35),  # API typically limits to 35 per request
-        }
-        
-        try:
-            response = await self.client.get(
-                url,
-                params=params,
-                allow_redirects=True,
-            )
-            
-            # Handle rate limiting
-            if response.status_code == 429:
-                raise ScraperRateLimitError(
-                    f"Rate limit exceeded for TikTok API. "
-                    f"Please try again later."
-                )
-            
-            # Handle not found
-            if response.status_code == 404:
-                raise ScraperNotFoundError(
-                    f"TikTok user not found: @{username}"
-                )
-            
-            # Handle other HTTP errors
-            if response.status_code != 200:
-                raise ScraperAPIError(
-                    f"TikTok API returned status {response.status_code}: "
-                    f"{response.text[:200]}"
-                )
-            
-            # Parse JSON response
-            data = response.json()
-            
-            # Check API response status
-            if data.get("code") != 0:
-                error_msg = data.get("msg", "Unknown error")
-                if "not found" in error_msg.lower():
-                    raise ScraperNotFoundError(f"TikTok user not found: @{username}")
-                raise ScraperAPIError(f"TikTok API error: {error_msg}")
-            
-            # Extract video list
-            videos = data.get("data", {}).get("videos", [])
-            
-            if not videos:
-                logger.warning(f"No videos found for TikTok user: @{username}")
-                return []
-            
-            return videos
-            
-        except CurlError as e:
-            err_str = str(e).lower()
-            if "timeout" in err_str or "timed out" in err_str:
-                raise ScraperTimeoutError(
-                    f"Request timed out after {self.timeout}s"
-                ) from e
-            raise ScraperAPIError(
-                f"HTTP error fetching TikTok feed: {str(e)}"
-            ) from e
-    
-    def _parse_video_data(self, video_data: dict, username: str) -> ScrapedVideo:
-        """
-        Parse raw API video data into a ScrapedVideo object.
-        
-        Args:
-            video_data: Raw video data from the API.
-            username: TikTok username.
-        
-        Returns:
-            ScrapedVideo object with standardized fields.
-        """
-        video_id = str(video_data.get("video_id", ""))
-        
-        # Extract video URL (prefer play URL, fallback to download URL)
-        video_url = (
-            video_data.get("play", "") or
-            video_data.get("wmplay", "") or
-            video_data.get("download_addr", "")
+
+        logger.info(
+            f"✅ Fetched {len(scraped)} videos for @{username} "
+            f"via {source}"
         )
-        
-        # Extract thumbnail URL
-        thumbnail_url = (
-            video_data.get("cover", "") or
-            video_data.get("origin_cover", "") or
-            video_data.get("dynamic_cover", "")
+        return scraped
+
+    # ------------------------------------------------------------------
+    # Fallback orchestrator
+    # ------------------------------------------------------------------
+
+    async def _fetch_with_fallback(
+        self, username: str, limit: int
+    ) -> tuple[list[dict], str]:
+        """Try each strategy in order. Return (videos, source)."""
+        strategies = [
+            (
+                "tikwm_post",
+                lambda: try_tikwm_post(
+                    username, limit, self.timeout
+                ),
+            ),
+            (
+                "ytdlp",
+                lambda: try_ytdlp(
+                    username, limit, self.ytdlp_timeout
+                ),
+            ),
+        ]
+
+        errors: list[str] = []
+
+        for name, fetch_fn in strategies:
+            for attempt in range(self.max_retries):
+                try:
+                    logger.info(
+                        f"[{name}] attempt {attempt + 1}/"
+                        f"{self.max_retries} for @{username}"
+                    )
+                    videos = await fetch_fn()
+                    if videos:
+                        return videos, name
+                    logger.warning(
+                        f"[{name}] returned 0 videos for @{username}"
+                    )
+                    break  # 0 videos is not retryable
+                except ScraperNotFoundError:
+                    raise  # user doesn't exist → stop
+                except ScraperRateLimitError as e:
+                    errors.append(f"{name}: {e}")
+                    break  # don't retry rate limits
+                except (
+                    ScraperTimeoutError, ScraperAPIError
+                ) as e:
+                    errors.append(f"{name}[{attempt+1}]: {e}")
+                    if attempt < self.max_retries - 1:
+                        wait = 2 ** attempt
+                        logger.warning(
+                            f"[{name}] failed, retry in {wait}s"
+                        )
+                        await asyncio.sleep(wait)
+                except Exception as e:
+                    errors.append(f"{name}: unexpected {e}")
+                    break
+
+        raise ScraperAPIError(
+            f"All TikTok sources failed for @{username}:\n"
+            + "\n".join(f"  • {e}" for e in errors)
         )
-        
-        # Extract caption/title
-        caption = video_data.get("title", "") or video_data.get("desc", "")
-        
-        # Extract author info
-        author = video_data.get("author", {}).get("unique_id", username)
-        author_url = f"https://www.tiktok.com/@{author}"
-        
-        # Extract timestamps
-        created_at = str(video_data.get("create_time", ""))
-        
-        # Extract metrics
-        duration_seconds = video_data.get("duration")
-        view_count = video_data.get("play_count")
-        like_count = video_data.get("digg_count")
-        
-        # Build original post URL
-        original_post_url = f"https://www.tiktok.com/@{author}/video/{video_id}"
-        
-        # Extract metadata
-        metadata = {
-            "share_count": video_data.get("share_count"),
-            "comment_count": video_data.get("comment_count"),
-            "music": video_data.get("music"),
-            "hashtags": [tag.get("name") for tag in video_data.get("text_extra", [])
-                        if tag.get("type") == 1],  # Type 1 = hashtag
-        }
-        
+
+    # ------------------------------------------------------------------
+    # Parsers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_tikwm_entry(
+        v: dict, username: str
+    ) -> ScrapedVideo:
+        """Parse a TikWM API video dict into ScrapedVideo."""
+        video_id = str(v.get("video_id", ""))
+        author = v.get("author", {}).get("unique_id", username)
+
         return ScrapedVideo(
             video_id=video_id,
             platform="tiktok",
-            video_url=video_url,
-            thumbnail_url=thumbnail_url,
-            caption=caption,
+            video_url=(
+                v.get("play", "")
+                or v.get("wmplay", "")
+                or v.get("download_addr", "")
+            ),
+            thumbnail_url=(
+                v.get("cover", "")
+                or v.get("origin_cover", "")
+            ),
+            caption=v.get("title", "") or v.get("desc", ""),
             author=author,
-            author_url=author_url,
-            created_at=created_at,
-            duration_seconds=duration_seconds,
-            view_count=view_count,
-            like_count=like_count,
-            original_post_url=original_post_url,
-            metadata=metadata,
+            author_url=f"https://www.tiktok.com/@{author}",
+            created_at=str(v.get("create_time", "")),
+            duration_seconds=v.get("duration"),
+            view_count=v.get("play_count"),
+            like_count=v.get("digg_count"),
+            original_post_url=(
+                f"https://www.tiktok.com/@{author}/video/{video_id}"
+            ),
+            metadata={
+                "source": "tikwm",
+                "share_count": v.get("share_count"),
+                "comment_count": v.get("comment_count"),
+                "music": v.get("music"),
+                "hashtags": [
+                    t.get("name")
+                    for t in v.get("text_extra", [])
+                    if t.get("type") == 1
+                ],
+            },
         )
-    
+
+    @staticmethod
+    def _parse_ytdlp_entry(
+        v: dict, username: str
+    ) -> ScrapedVideo:
+        """Parse a yt-dlp JSON entry into ScrapedVideo."""
+        video_id = str(v.get("id", ""))
+        author = v.get("uploader_id", username) or username
+
+        return ScrapedVideo(
+            video_id=video_id,
+            platform="tiktok",
+            video_url=v.get("url", "") or v.get("webpage_url", ""),
+            thumbnail_url=v.get("thumbnail"),
+            caption=(
+                v.get("description", "") or v.get("title", "")
+            ),
+            author=author,
+            author_url=(
+                v.get("uploader_url", "")
+                or f"https://www.tiktok.com/@{author}"
+            ),
+            created_at=str(v.get("timestamp", "")),
+            duration_seconds=v.get("duration"),
+            view_count=v.get("view_count"),
+            like_count=v.get("like_count"),
+            original_post_url=(
+                v.get("webpage_url", "")
+                or f"https://www.tiktok.com/@{author}/video/"
+                f"{video_id}"
+            ),
+            metadata={
+                "source": "ytdlp",
+                "comment_count": v.get("comment_count"),
+                "repost_count": v.get("repost_count"),
+                "track": v.get("track"),
+                "artist": v.get("artist"),
+                "hashtags": v.get("tags", []),
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Context manager
+    # ------------------------------------------------------------------
+
     async def __aenter__(self):
         """Async context manager entry."""
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit - cleanup HTTP client."""
-        await self.client.close()
+        """Async context manager exit (no persistent client)."""
+        pass

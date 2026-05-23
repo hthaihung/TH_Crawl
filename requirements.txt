@@ -18,3 +18,6 @@ httpx==0.27.0
 
 # Cloudflare bypass (TLS fingerprint impersonation)
 curl_cffi>=0.7.1
+
+# TikTok video extraction fallback (handles anti-bot, DC IP bypass)
+yt-dlp>=2024.12.0
