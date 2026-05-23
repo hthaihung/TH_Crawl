@@ -4,12 +4,16 @@ TikTok scraper implementation.
 This module provides a scraper for fetching videos from TikTok user profiles
 using a third-party API service. It implements the BaseScraper interface
 and handles TikTok-specific data extraction and error handling.
+
+Uses curl_cffi instead of httpx to bypass Cloudflare bot detection
+by impersonating a real Chrome browser TLS fingerprint.
 """
 
 import os
 import logging
 from typing import Optional
-import httpx
+from curl_cffi.requests import AsyncSession
+from curl_cffi import CurlError
 import asyncio
 
 from .base import (
@@ -34,7 +38,7 @@ class TikTokScraper(BaseScraper):
     TikTok video data without authentication.
     
     Features:
-    - Async HTTP requests using httpx
+    - Async HTTP requests using curl_cffi (Cloudflare bypass via TLS impersonation)
     - Automatic retry with exponential backoff
     - Rate limit handling
     - Comprehensive error handling
@@ -60,10 +64,11 @@ class TikTokScraper(BaseScraper):
         self.timeout = int(os.getenv("TIKTOK_API_TIMEOUT", "30"))
         self.max_retries = int(os.getenv("TIKTOK_MAX_RETRIES", "3"))
         
-        # Create async HTTP client
-        self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(self.timeout),
-            follow_redirects=True,
+        # Create async HTTP client with Chrome TLS impersonation
+        # This bypasses Cloudflare bot detection on tikwm.com
+        self.client = AsyncSession(
+            timeout=self.timeout,
+            impersonate="chrome",
         )
     
     def platform_name(self) -> str:
@@ -198,7 +203,11 @@ class TikTokScraper(BaseScraper):
         }
         
         try:
-            response = await self.client.get(url, params=params)
+            response = await self.client.get(
+                url,
+                params=params,
+                allow_redirects=True,
+            )
             
             # Handle rate limiting
             if response.status_code == 429:
@@ -239,11 +248,12 @@ class TikTokScraper(BaseScraper):
             
             return videos
             
-        except httpx.TimeoutException as e:
-            raise ScraperTimeoutError(
-                f"Request timed out after {self.timeout}s"
-            ) from e
-        except httpx.HTTPError as e:
+        except CurlError as e:
+            err_str = str(e).lower()
+            if "timeout" in err_str or "timed out" in err_str:
+                raise ScraperTimeoutError(
+                    f"Request timed out after {self.timeout}s"
+                ) from e
             raise ScraperAPIError(
                 f"HTTP error fetching TikTok feed: {str(e)}"
             ) from e
@@ -324,4 +334,4 @@ class TikTokScraper(BaseScraper):
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit - cleanup HTTP client."""
-        await self.client.aclose()
+        await self.client.close()
