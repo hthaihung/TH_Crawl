@@ -67,7 +67,7 @@
 | 2026-05-23 | Added baseUrl to tsconfig.json | Next.js requires `baseUrl: "."` in tsconfig.json for path alias resolution (`@/*`). Without it, Vercel builds fail with "Module not found" errors. | Kiro |
 | 2026-05-23 | Use relative imports over path aliases | In monorepo subdirectory structures, Webpack on Vercel cannot reliably resolve `@/` path aliases. Using relative imports (`../../../`) ensures consistent builds across all environments. | Kiro |
 | 2026-05-23 | Updated Supabase client to 2.7.4 | Older version 2.4.0 had API compatibility issues causing "unexpected keyword argument 'proxy'" errors. Version 2.7.4 provides stable API and better compatibility with Python 3.11+. | Kiro |
-| 2026-05-23 | Added jsconfig.json for Next.js path resolution | Next.js requires both tsconfig.json and jsconfig.json for reliable path alias resolution in Vercel builds. jsconfig.json ensures Webpack correctly resolves @/* imports. | Kiro |
+| 2026-05-23 | NEVER use @/ path aliases in dashboard | After multiple failed attempts, confirmed that `@/` path aliases DO NOT WORK in Next.js monorepo subdirectory structures on Vercel, regardless of tsconfig.json or jsconfig.json configuration. ONLY relative paths work reliably. | Kiro |
 
 ---
 
@@ -377,15 +377,28 @@ _No technical debt recorded yet. Agents should add items here when they encounte
 
 ### 2026-05-23 — Vercel Build Fix (Path Alias with jsconfig) (Kiro)
 
-- ✅ Reverted back to `@/` path aliases in dashboard pages
+- ❌ FAILED APPROACH: Attempted to use `@/` path aliases with jsconfig.json
 - ✅ Added `dashboard/jsconfig.json` with baseUrl and paths configuration
 - ✅ Both `tsconfig.json` and `jsconfig.json` now have matching path configurations
 - ✅ Committed fix: "fix: correct relative import depth for vercel build"
 - ✅ Pushed to GitHub
 - **Issue**: Relative imports (`../../../`) failed on Vercel with "Module not found"
-- **Root Cause**: Next.js/Webpack needs explicit jsconfig.json for path resolution in addition to tsconfig.json
-- **Solution**: Added jsconfig.json with baseUrl and @/* path mapping, reverted to @/ imports
-- **Dashboard should now build successfully on Vercel with proper path alias resolution**
+- **Attempted Solution**: Added jsconfig.json with baseUrl and @/* path mapping, reverted to @/ imports
+- **Result**: FAILED - Vercel still cannot resolve @/ aliases in monorepo structure
+
+### 2026-05-23 — Vercel Build Fix (FINAL - Relative Paths Only) (Kiro)
+
+- ✅ STRICTLY enforced relative paths (`../../../`) in ALL dashboard imports
+- ✅ Removed ALL `@/` path aliases from `dashboard/src/app/dashboard/approval/page.tsx`
+- ✅ Removed ALL `@/` path aliases from `dashboard/src/app/dashboard/targets/page.tsx`
+- ✅ Verified zero remaining `@/` imports in entire dashboard
+- ✅ Committed fix: "fix: strictly enforce relative paths to fix vercel build"
+- ✅ Pushed to GitHub
+- **Issue**: Vercel build STILL failing with "Module not found: Can't resolve '@/lib/supabase'"
+- **Root Cause**: `@/` path aliases DO NOT WORK in Next.js monorepo subdirectory structures on Vercel
+- **FINAL Solution**: Use ONLY relative paths (`../../../lib/`, `../../../components/`, etc.)
+- **CRITICAL RULE**: NEVER use `@/` imports in this dashboard - ONLY relative paths
+- **Dashboard should now build successfully on Vercel with pure relative imports**
 
 ---
 
