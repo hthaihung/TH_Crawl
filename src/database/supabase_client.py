@@ -71,6 +71,16 @@ def get_supabase_client() -> Client:
     try:
         _supabase_client = create_client(supabase_url, supabase_key)
         return _supabase_client
+    except TypeError as e:
+        # Handle version compatibility issues
+        if "proxy" in str(e):
+            raise SupabaseClientError(
+                f"Supabase client initialization failed due to version incompatibility. "
+                f"Please ensure supabase-py is version 2.0.0 or higher. Error: {str(e)}"
+            ) from e
+        raise SupabaseClientError(
+            f"Failed to initialize Supabase client: {str(e)}"
+        ) from e
     except Exception as e:
         raise SupabaseClientError(
             f"Failed to initialize Supabase client: {str(e)}"
