@@ -3,10 +3,10 @@
 import { useState, useEffect } from 'react';
 import { CheckCircle, XCircle, ArrowLeft, TrendingUp } from 'lucide-react';
 import Link from 'next/link';
-import { supabase } from '@/lib/supabase';
-import type { AIMappingWithRelations } from '@/types/database';
-import Button from '@/components/ui/Button';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
+import { supabase } from '../../../lib/supabase';
+import type { AIMappingWithRelations } from '../../../types/database';
+import Button from '../../../components/ui/Button';
+import { Card, CardHeader, CardTitle, CardContent } from '../../../components/ui/Card';
 
 export default function ApprovalPage() {
   const [mappings, setMappings] = useState<AIMappingWithRelations[]>([]);
