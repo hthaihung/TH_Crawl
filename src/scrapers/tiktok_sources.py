@@ -140,3 +140,48 @@ async def try_ytdlp(
             continue
 
     return videos
+
+
+async def try_ytdlp_stories(
+    username: str, timeout: int
+) -> list[dict]:
+    """Fetch TikTok stories via yt-dlp."""
+    # Stories URL format for yt-dlp
+    stories_url = f"https://www.tiktok.com/@{username}"
+    
+    proc = await asyncio.create_subprocess_exec(
+        "yt-dlp",
+        "--dump-json",
+        "--no-download",
+        "--no-warnings",
+        "--quiet",
+        "--extractor-args", "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com",
+        f"{stories_url}/stories",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        return []  # Stories are optional, don't raise
+    
+    if proc.returncode != 0:
+        return []  # Stories might not exist, return empty
+    
+    videos: list[dict] = []
+    for line in stdout.decode(errors="replace").strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+            entry["_is_story"] = True  # Mark as story
+            videos.append(entry)
+        except json.JSONDecodeError:
+            continue
+    
+    return videos

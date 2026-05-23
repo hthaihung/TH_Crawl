@@ -21,7 +21,7 @@ from .base import (
     ScraperRateLimitError,
     ScraperTimeoutError,
 )
-from .tiktok_sources import try_tikwm_post, try_ytdlp
+from .tiktok_sources import try_tikwm_post, try_ytdlp, try_ytdlp_stories
 
 
 logger = logging.getLogger(__name__)
@@ -111,6 +111,21 @@ class TikTokScraper(BaseScraper):
             f"✅ Fetched {len(scraped)} videos for @{username} "
             f"via {source}"
         )
+
+        # Also fetch stories (best-effort, don't fail if stories unavailable)
+        try:
+            stories_data = await try_ytdlp_stories(username, self.ytdlp_timeout)
+            for s in stories_data:
+                try:
+                    sv = self._parse_ytdlp_entry(s, username)
+                    scraped.append(sv)
+                except Exception:
+                    continue
+            if stories_data:
+                logger.info(f"📖 Also fetched {len(stories_data)} stories for @{username}")
+        except Exception as e:
+            logger.debug(f"Stories fetch skipped for @{username}: {e}")
+
         return scraped
 
     # ------------------------------------------------------------------
@@ -260,6 +275,7 @@ class TikTokScraper(BaseScraper):
                 "track": v.get("track"),
                 "artist": v.get("artist"),
                 "hashtags": v.get("tags", []),
+                "is_story": v.get("_is_story", False),
             },
         )
 
