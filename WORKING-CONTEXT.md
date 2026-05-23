@@ -66,6 +66,7 @@
 | 2026-05-23 | 20-minute orchestration interval | Default scrape interval set to 20 minutes (configurable via `SCRAPE_INTERVAL_MINUTES`). Balances freshness of content with API rate limits and server load. | Kiro |
 | 2026-05-23 | Added baseUrl to tsconfig.json | Next.js requires `baseUrl: "."` in tsconfig.json for path alias resolution (`@/*`). Without it, Vercel builds fail with "Module not found" errors. | Kiro |
 | 2026-05-23 | Use relative imports over path aliases | In monorepo subdirectory structures, Webpack on Vercel cannot reliably resolve `@/` path aliases. Using relative imports (`../../../`) ensures consistent builds across all environments. | Kiro |
+| 2026-05-23 | Updated Supabase client to 2.7.4 | Older version 2.4.0 had API compatibility issues causing "unexpected keyword argument 'proxy'" errors. Version 2.7.4 provides stable API and better compatibility with Python 3.11+. | Kiro |
 
 ---
 
@@ -360,6 +361,18 @@ _No technical debt recorded yet. Agents should add items here when they encounte
 - **Root Cause**: Webpack bundler cannot resolve `@/` aliases in subdirectory structure
 - **Solution**: Replaced all path aliases with standard relative paths (`../../../`)
 - **Dashboard should now build successfully on Vercel with relative imports**
+
+### 2026-05-23 — VPS Bot Startup Fix (Supabase Client) (Kiro)
+
+- ✅ Fixed Supabase client initialization error on VPS
+- ✅ Updated `supabase` package version from 2.4.0 to 2.7.4
+- ✅ Added better error handling for TypeError in client initialization
+- ✅ Committed fix: "fix: remove unsupported proxy argument from supabase initialization"
+- ✅ Pushed to GitHub
+- **Issue**: Bot failed to start with "Client.__init__() got an unexpected keyword argument 'proxy'"
+- **Root Cause**: Outdated `supabase==2.4.0` had API compatibility issues
+- **Solution**: Updated to `supabase==2.7.4` and improved error handling
+- **Bot should now start successfully on VPS**
 
 ---
 
