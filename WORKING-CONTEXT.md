@@ -64,6 +64,7 @@
 | 2026-05-23 | Temporary file cleanup in finally block | Use `try...finally` to ensure temp files are deleted even if upload fails. Prevents disk space exhaustion on VPS. Uses `pathlib.Path.unlink()` for cross-platform compatibility. | Kiro |
 | 2026-05-23 | Stream download with size validation | Check `Content-Length` header before download and track bytes during streaming. Abort download if size exceeds limit. Prevents wasting bandwidth and disk space on oversized files. | Kiro |
 | 2026-05-23 | 20-minute orchestration interval | Default scrape interval set to 20 minutes (configurable via `SCRAPE_INTERVAL_MINUTES`). Balances freshness of content with API rate limits and server load. | Kiro |
+| 2026-05-23 | Added baseUrl to tsconfig.json | Next.js requires `baseUrl: "."` in tsconfig.json for path alias resolution (`@/*`). Without it, Vercel builds fail with "Module not found" errors. | Kiro |
 
 ---
 
@@ -326,6 +327,18 @@ _No technical debt recorded yet. Agents should add items here when they encounte
 - ✅ Successfully pushed to GitHub
 - ✅ Updated WORKING-CONTEXT.md with repository information
 - **Codebase now version controlled and backed up on GitHub**
+
+### 2026-05-23 — Vercel Build Fix (Kiro)
+
+- ✅ Fixed Webpack module resolution error on Vercel
+- ✅ Added missing `baseUrl: "."` to `dashboard/tsconfig.json`
+- ✅ Verified `@/lib/supabase` and `@/lib/similarity` path aliases now resolve correctly
+- ✅ Committed fix: "fix: resolve nextjs path alias for vercel build"
+- ✅ Pushed to GitHub
+- **Issue**: Vercel build failed with "Module not found: Can't resolve '@/lib/supabase'"
+- **Root Cause**: Missing `baseUrl` in TypeScript compiler options
+- **Solution**: Added `"baseUrl": "."` to enable path alias resolution
+- **Dashboard should now build successfully on Vercel**
 
 ---
 
