@@ -65,6 +65,7 @@
 | 2026-05-23 | Stream download with size validation | Check `Content-Length` header before download and track bytes during streaming. Abort download if size exceeds limit. Prevents wasting bandwidth and disk space on oversized files. | Kiro |
 | 2026-05-23 | 20-minute orchestration interval | Default scrape interval set to 20 minutes (configurable via `SCRAPE_INTERVAL_MINUTES`). Balances freshness of content with API rate limits and server load. | Kiro |
 | 2026-05-23 | Added baseUrl to tsconfig.json | Next.js requires `baseUrl: "."` in tsconfig.json for path alias resolution (`@/*`). Without it, Vercel builds fail with "Module not found" errors. | Kiro |
+| 2026-05-23 | Use relative imports over path aliases | In monorepo subdirectory structures, Webpack on Vercel cannot reliably resolve `@/` path aliases. Using relative imports (`../../../`) ensures consistent builds across all environments. | Kiro |
 
 ---
 
@@ -339,6 +340,26 @@ _No technical debt recorded yet. Agents should add items here when they encounte
 - **Root Cause**: Missing `baseUrl` in TypeScript compiler options
 - **Solution**: Added `"baseUrl": "."` to enable path alias resolution
 - **Dashboard should now build successfully on Vercel**
+
+### 2026-05-23 — Vercel Build Fix (Relative Imports) (Kiro)
+
+- ✅ Replaced all `@/` path aliases with relative imports in dashboard
+- ✅ Updated `dashboard/src/app/dashboard/approval/page.tsx`:
+  - Changed `@/lib/supabase` → `../../../lib/supabase`
+  - Changed `@/types/database` → `../../../types/database`
+  - Changed `@/components/ui/*` → `../../../components/ui/*`
+- ✅ Updated `dashboard/src/app/dashboard/targets/page.tsx`:
+  - Changed `@/lib/supabase` → `../../../lib/supabase`
+  - Changed `@/lib/similarity` → `../../../lib/similarity`
+  - Changed `@/types/database` → `../../../types/database`
+  - Changed `@/components/ui/*` → `../../../components/ui/*`
+- ✅ Verified no remaining `@/` imports in dashboard
+- ✅ Committed fix: "fix: use relative path imports to bypass vercel alias issue"
+- ✅ Pushed to GitHub
+- **Issue**: Vercel build still failing despite baseUrl fix (monorepo subdirectory issue)
+- **Root Cause**: Webpack bundler cannot resolve `@/` aliases in subdirectory structure
+- **Solution**: Replaced all path aliases with standard relative paths (`../../../`)
+- **Dashboard should now build successfully on Vercel with relative imports**
 
 ---
 
