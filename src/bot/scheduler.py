@@ -7,10 +7,11 @@ fetch, process, and deliver social media videos to Discord channels.
 """
 
 import os
+import json
 import logging
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import discord
 import httpx
@@ -18,7 +19,13 @@ from discord.ext import tasks
 
 from scrapers import ScraperFactory, ScrapedVideo, ScraperError
 from database.supabase_client import get_supabase_client
-from .delivery import download_video, send_to_discord, record_processed_video
+from .delivery import (
+    download_video, 
+    send_batch_to_discord, 
+    record_processed_video,
+    save_to_queue,
+    QUEUE_DIR
+)
 
 if TYPE_CHECKING:
     from .core import CrawlStoryBot
@@ -30,14 +37,7 @@ VIDEO_DOWNLOAD_TIMEOUT = int(os.getenv("VIDEO_DOWNLOAD_TIMEOUT", "60"))
 
 
 class MediaOrchestrator:
-    """
-    Orchestrates automated video scraping and delivery to Discord.
-    
-    Attributes:
-        bot: The Discord bot instance.
-        supabase: Supabase client for database operations.
-        http_client: Async HTTP client for downloading videos.
-    """
+    """Orchestrates automated video scraping and delivery to Discord."""
     
     def __init__(self, bot: "CrawlStoryBot"):
         self.bot = bot
@@ -54,193 +54,212 @@ class MediaOrchestrator:
         }
     
     def start(self) -> None:
-        """Start the orchestration background loop."""
+        """Start the orchestration and queue loops."""
         self.orchestration_loop.start()
-        logger.info(
-            f"Media orchestrator started with {SCRAPE_INTERVAL_MINUTES} minute interval"
-        )
+        self.retry_queue_loop.start()
+        logger.info(f"Media orchestrator started with {SCRAPE_INTERVAL_MINUTES}m interval")
     
     def stop(self) -> None:
-        """Stop the orchestration background loop."""
+        """Stop the background loops."""
         self.orchestration_loop.cancel()
+        self.retry_queue_loop.cancel()
         logger.info("Media orchestrator stopped")
     
+    @tasks.loop(minutes=5)
+    async def retry_queue_loop(self) -> None:
+        """Process failed deliveries from the local queue."""
+        if not QUEUE_DIR.exists():
+            return
+            
+        for queue_file in QUEUE_DIR.glob("*.json"):
+            try:
+                with open(queue_file, "r") as f:
+                    data = json.load(f)
+                
+                # Reconstruct ScrapedVideo
+                video = ScrapedVideo(**data["video"])
+                target_id = data["target_id"]
+                channel_id = data["discord_channel_id"]
+                file_path = Path(data["file_path"])
+                
+                channel_record = self.supabase.table("discord_channels").select("channel_id").eq("id", channel_id).execute()
+                if not channel_record.data:
+                    continue
+                
+                discord_channel = self.bot.get_channel(int(channel_record.data[0]["channel_id"]))
+                if discord_channel and file_path.exists():
+                    msg = await send_batch_to_discord(discord_channel, [(video, file_path)])
+                    if msg:
+                        recorded = await record_processed_video(
+                            self.supabase, video, target_id, channel_id, msg.id
+                        )
+                        if recorded:
+                            # Success, clean up queue
+                            queue_file.unlink()
+                            file_path.unlink()
+                            logger.info(f"Successfully retried delivery for {video.video_id}")
+            except Exception as e:
+                logger.error(f"Error processing queue file {queue_file.name}: {e}")
+
     @tasks.loop(minutes=SCRAPE_INTERVAL_MINUTES)
     async def orchestration_loop(self) -> None:
-        """Main orchestration loop that runs periodically."""
+        """Main orchestration loop."""
         logger.info("=" * 60)
         logger.info("Starting orchestration cycle")
-        logger.info("=" * 60)
         
-        session_stats = {"videos_processed": 0, "videos_delivered": 0, "videos_skipped": 0, "errors": 0}
+        session_stats = {"processed": 0, "delivered": 0, "skipped": 0, "errors": 0}
         
         try:
             mappings = await self._fetch_approved_mappings()
-            logger.info(f"Found {len(mappings)} approved mappings")
             
             for mapping in mappings:
                 try:
                     result = await self._process_mapping(mapping)
-                    session_stats["videos_processed"] += result["processed"]
-                    session_stats["videos_delivered"] += result["delivered"]
-                    session_stats["videos_skipped"] += result["skipped"]
+                    session_stats["processed"] += result["processed"]
+                    session_stats["delivered"] += result["delivered"]
+                    session_stats["skipped"] += result["skipped"]
                 except Exception as e:
                     session_stats["errors"] += 1
-                    logger.error(f"Error processing mapping {mapping.get('id')}: {e}", exc_info=True)
+                    logger.error(f"Error processing mapping: {e}", exc_info=True)
             
             self.stats["total_runs"] += 1
-            self.stats["total_videos_processed"] += session_stats["videos_processed"]
-            self.stats["total_videos_delivered"] += session_stats["videos_delivered"]
-            self.stats["total_errors"] += session_stats["errors"]
+            self.stats["total_videos_processed"] += session_stats["processed"]
+            self.stats["total_videos_delivered"] += session_stats["delivered"]
             
         except Exception as e:
-            logger.error(f"Fatal error in orchestration loop: {e}", exc_info=True)
+            logger.error(f"Fatal error in orchestration loop: {e}")
             session_stats["errors"] += 1
         
-        logger.info("=" * 60)
-        logger.info(
-            f"Scrape session completed: "
-            f"{session_stats['videos_processed']} videos processed, "
-            f"{session_stats['videos_delivered']} uploaded, "
-            f"{session_stats['videos_skipped']} skipped, "
-            f"{session_stats['errors']} errors"
-        )
+        logger.info(f"Cycle Complete: {session_stats['delivered']} delivered")
         logger.info("=" * 60)
     
     @orchestration_loop.before_loop
-    async def before_orchestration_loop(self) -> None:
-        """Wait for the bot to be ready before starting the loop."""
+    @retry_queue_loop.before_loop
+    async def before_loops(self) -> None:
         await self.bot.wait_until_ready()
-        logger.info("Bot is ready, orchestration loop will start")
     
     async def _fetch_approved_mappings(self) -> list[dict]:
-        """Fetch approved mappings with joined data from Supabase."""
+        """Fetch approved mappings."""
         try:
             response = self.supabase.table("ai_mappings").select(
-                "id, "
-                "social_targets(id, platform, target_url, display_name, is_active), "
+                "id, social_targets(id, platform, target_url, display_name, is_active), "
                 "discord_channels(id, channel_id, channel_name, is_active)"
             ).eq("status", "approved").execute()
             
-            active_mappings = [
+            return [
                 m for m in response.data
                 if m.get("social_targets", {}).get("is_active")
                 and m.get("discord_channels", {}).get("is_active")
             ]
-            return active_mappings
         except Exception as e:
-            logger.error(f"Failed to fetch approved mappings: {e}")
+            logger.error(f"Failed to fetch mappings: {e}")
             return []
     
     async def _process_mapping(self, mapping: dict) -> dict:
-        """Process a single mapping: scrape videos and deliver to Discord."""
+        """Process a single mapping: scrape videos and deliver via batching."""
         stats = {"processed": 0, "delivered": 0, "skipped": 0}
         
         target = mapping.get("social_targets", {})
         channel_data = mapping.get("discord_channels", {})
-        
         platform = target.get("platform")
         username = self._extract_username(target.get("target_url", ""))
         channel_id = int(channel_data.get("channel_id"))
         
-        logger.info(f"Processing: {platform}/@{username} → #{channel_data.get('channel_name')}")
-        
+        discord_channel = self.bot.get_channel(channel_id)
+        if not discord_channel:
+            return stats
+            
         try:
             scraper = ScraperFactory.get_scraper(platform)
             videos = await scraper.fetch_latest_videos(username, limit=10)
-            logger.info(f"Fetched {len(videos)} videos from {platform}/@{username}")
         except ScraperError as e:
             logger.error(f"Scraper error for {platform}/@{username}: {e}")
             return stats
-        
+            
+        # Heartbeat Check
+        if not videos:
+            self._check_heartbeat(target.get("id"), username)
+            return stats
+            
+        new_videos = []
         for video in videos:
             stats["processed"] += 1
-            
             if await self._is_video_processed(video):
-                logger.debug(f"Video {video.video_id} already processed, skipping")
                 stats["skipped"] += 1
-                continue
-            
-            delivered = await self._download_and_deliver(
-                video, channel_id, target.get("id"), channel_data.get("id")
-            )
-            
-            if delivered:
-                stats["delivered"] += 1
             else:
-                stats["skipped"] += 1
-        
+                new_videos.append(video)
+                
+        if not new_videos:
+            self._check_heartbeat(target.get("id"), username)
+            return stats
+            
+        # Batch Delivery
+        await self._deliver_batches(new_videos, discord_channel, target.get("id"), channel_data.get("id"), stats)
         return stats
-    
+
+    def _check_heartbeat(self, target_id: str, username: str) -> None:
+        """Log a heartbeat if no videos found in 24h."""
+        try:
+            res = self.supabase.table("processed_videos").select("processed_at")\
+                .eq("social_target_id", target_id).order("processed_at", desc=True).limit(1).execute()
+            
+            if not res.data:
+                logger.info(f"STATUS CHECK: No new media for @{username} in the last 24h.")
+                return
+                
+            last_dt = datetime.fromisoformat(res.data[0]["processed_at"].replace("Z", "+00:00"))
+            if datetime.utcnow().replace(tzinfo=last_dt.tzinfo) - last_dt > timedelta(hours=24):
+                logger.info(f"STATUS CHECK: No new media for @{username} in the last 24h.")
+        except Exception:
+            pass
+
+    async def _deliver_batches(self, videos: list, channel: discord.TextChannel, target_id: str, db_channel_id: str, stats: dict) -> None:
+        """Download and batch deliver videos to Discord."""
+        # Split into chunks of 10
+        for i in range(0, len(videos), 10):
+            batch = videos[i:i+10]
+            downloaded = []
+            
+            for video in batch:
+                temp_file = await download_video(self.http_client, video.video_url)
+                if temp_file:
+                    downloaded.append((video, temp_file))
+                else:
+                    save_to_queue(video, target_id, db_channel_id, Path("dummy"))
+            
+            if not downloaded:
+                continue
+                
+            msg = await send_batch_to_discord(channel, downloaded)
+            
+            if msg:
+                for video, temp_file in downloaded:
+                    recorded = await record_processed_video(self.supabase, video, target_id, db_channel_id, msg.id)
+                    if not recorded:
+                        save_to_queue(video, target_id, db_channel_id, temp_file)
+                    else:
+                        stats["delivered"] += 1
+                        try:
+                            temp_file.unlink()
+                        except:
+                            pass
+            else:
+                # Batch failed to send to Discord
+                for video, temp_file in downloaded:
+                    save_to_queue(video, target_id, db_channel_id, temp_file)
+
     async def _is_video_processed(self, video: ScrapedVideo) -> bool:
         """Check if a video has already been processed."""
         try:
-            # Check by original_url to properly deduplicate
-            response = self.supabase.table("processed_videos").select(
-                "original_url"
-            ).eq("original_url", video.original_post_url).limit(1).execute()
-            
+            response = self.supabase.table("processed_videos").select("original_url").eq("original_url", video.original_post_url).limit(1).execute()
             return len(response.data) > 0
-        except Exception as e:
-            logger.error(f"Error checking if video processed: {e}")
+        except Exception:
             return False
-    
-    async def _download_and_deliver(
-        self,
-        video: ScrapedVideo,
-        channel_id: int,
-        target_id: str,
-        discord_channel_id: str
-    ) -> bool:
-        """Download video file and deliver to Discord channel."""
-        temp_file: Optional[Path] = None
-        
-        try:
-            temp_file = await download_video(self.http_client, video.video_url)
-            
-            if temp_file is None:
-                logger.warning(f"Failed to download video {video.video_id}")
-                return False
-            
-            channel = self.bot.get_channel(channel_id)
-            if channel is None:
-                logger.error(f"Discord channel {channel_id} not found")
-                return False
-            
-            message = await send_to_discord(channel, video, temp_file)
-            
-            if message is None:
-                return False
-            
-            await record_processed_video(
-                self.supabase, video, target_id, discord_channel_id, message.id
-            )
-            
-            logger.info(f"✅ Delivered video {video.video_id} to #{channel.name}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error delivering video {video.video_id}: {e}", exc_info=True)
-            return False
-        finally:
-            if temp_file and temp_file.exists():
-                try:
-                    temp_file.unlink()
-                    logger.debug(f"Cleaned up temp file: {temp_file}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete temp file {temp_file}: {e}")
-    
+
     @staticmethod
     def _extract_username(target_url: str) -> str:
-        """Extract username from target URL."""
-        if "/" in target_url:
-            parts = target_url.rstrip("/").split("/")
-            username = parts[-1]
-        else:
-            username = target_url
-        return username.lstrip("@")
+        parts = target_url.rstrip("/").split("/")
+        return parts[-1].lstrip("@") if "/" in target_url else target_url.lstrip("@")
     
     async def cleanup(self) -> None:
-        """Cleanup resources when shutting down."""
         await self.http_client.aclose()
-        logger.info("Media orchestrator cleaned up")

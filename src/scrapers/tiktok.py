@@ -114,19 +114,31 @@ class TikTokScraper(BaseScraper):
 
         # Also fetch stories (best-effort, don't fail if stories unavailable)
         try:
-            stories_data = await try_ytdlp_stories(username, self.ytdlp_timeout)
-            for s in stories_data:
-                try:
-                    sv = self._parse_ytdlp_entry(s, username)
-                    scraped.append(sv)
-                except Exception:
-                    continue
-            if stories_data:
-                logger.info(f"📖 Also fetched {len(stories_data)} stories for @{username}")
+            stories = await self.fetch_stories(username)
+            scraped.extend(stories)
+            if stories:
+                logger.info(f"📖 Also fetched {len(stories)} stories for @{username}")
         except Exception as e:
             logger.debug(f"Stories fetch skipped for @{username}: {e}")
 
         return scraped
+
+    async def fetch_stories(self, username: str) -> list[ScrapedVideo]:
+        """Fetch TikTok stories (ephemeral content) for a user."""
+        try:
+            stories_data = await try_ytdlp_stories(username, self.ytdlp_timeout)
+            scraped_stories = []
+            for s in stories_data:
+                try:
+                    sv = self._parse_ytdlp_entry(s, username)
+                    sv.metadata["is_story"] = True
+                    scraped_stories.append(sv)
+                except Exception:
+                    continue
+            return scraped_stories
+        except Exception as e:
+            logger.error(f"Error fetching stories for @{username}: {e}")
+            return []
 
     # ------------------------------------------------------------------
     # Fallback orchestrator

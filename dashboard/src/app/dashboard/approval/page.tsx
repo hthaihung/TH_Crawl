@@ -6,12 +6,9 @@ import { useState, useEffect } from 'react';
 import { CheckCircle, XCircle, ArrowLeft, TrendingUp } from 'lucide-react';
 import Link from 'next/link';
 import { supabase } from '../../../lib/supabase';
-import { findBestMatches } from '../../../lib/similarity';
 import type { AIMappingWithRelations } from '../../../types/database';
 import Button from '../../../components/ui/Button';
 import { Card, CardHeader, CardTitle, CardContent } from '../../../components/ui/Card';
-
-const CONFIDENCE_THRESHOLD = 40;
 
 export default function ApprovalPage() {
   const [mappings, setMappings] = useState<AIMappingWithRelations[]>([]);
@@ -20,49 +17,15 @@ export default function ApprovalPage() {
 
   useEffect(() => {
     async function init() {
-      await computeMissingSuggestions();
+      try {
+        await fetch('/api/approval/recommend', { method: 'POST' });
+      } catch (err) {
+        console.error('Failed to compute missing suggestions:', err);
+      }
       await fetchPendingMappings();
     }
     init();
   }, []);
-
-  async function computeMissingSuggestions() {
-    try {
-      const { data: targets } = await supabase
-        .from('social_targets').select('*').eq('is_active', true);
-      const { data: existingMappings } = await supabase
-        .from('ai_mappings').select('social_target_id');
-      const mappedTargetIds = new Set(
-        existingMappings?.map(m => m.social_target_id) || []
-      );
-      const unmappedTargets = targets?.filter(
-        t => !mappedTargetIds.has(t.id)
-      ) || [];
-      if (unmappedTargets.length === 0) return;
-
-      const { data: channels } = await supabase
-        .from('discord_channels').select('*').eq('is_active', true);
-      if (!channels || channels.length === 0) return;
-
-      for (const target of unmappedTargets) {
-        const matches = findBestMatches(
-          channels, target.display_name, target.description,
-          CONFIDENCE_THRESHOLD
-        );
-        for (const match of matches) {
-          await supabase.from('ai_mappings').insert({
-            social_target_id: target.id,
-            discord_channel_id: match.channelId,
-            status: 'pending',
-            confidence_score: match.score / 100,
-            reasoning: `Auto-suggested: ${match.score}% text similarity`,
-          });
-        }
-      }
-    } catch (error) {
-      console.error('Error computing missing suggestions:', error);
-    }
-  }
 
   async function fetchPendingMappings() {
     try {
