@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { ArrowRight, Target, CheckCircle } from 'lucide-react';
+import { ArrowRight, Target, CheckCircle, Link2 } from 'lucide-react';
 
 export default function HomePage() {
   return (
@@ -14,7 +14,7 @@ export default function HomePage() {
           </p>
         </div>
 
-        <div className="grid md:grid-cols-2 gap-6 max-w-4xl mx-auto">
+        <div className="grid md:grid-cols-3 gap-6 max-w-6xl mx-auto">
           <Link
             href="/dashboard/targets"
             className="bg-white rounded-lg shadow-lg p-8 hover:shadow-xl transition-shadow"
@@ -28,6 +28,22 @@ export default function HomePage() {
             </h2>
             <p className="text-gray-600">
               Add and manage social media profiles to scrape videos from
+            </p>
+          </Link>
+
+          <Link
+            href="/dashboard/mappings"
+            className="bg-white rounded-lg shadow-lg p-8 hover:shadow-xl transition-shadow"
+          >
+            <div className="flex items-center justify-between mb-4">
+              <Link2 className="w-12 h-12 text-purple-600" />
+              <ArrowRight className="w-6 h-6 text-gray-400" />
+            </div>
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">
+              Manage Mappings
+            </h2>
+            <p className="text-gray-600">
+              View and edit Target → Channel mappings
             </p>
           </Link>
 
