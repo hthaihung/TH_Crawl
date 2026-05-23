@@ -2,7 +2,8 @@
 
 > **Project**: Automated Social Media Video Scraper to Discord  
 > **Initialized**: 2026-05-23  
-> **Last Updated**: 2026-05-23T10:09:00+07:00
+> **Last Updated**: 2026-05-23T10:09:00+07:00  
+> **GitHub Repository**: https://github.com/hthaihung/TH_Crawl.git
 
 ---
 
@@ -264,15 +265,78 @@ _No technical debt recorded yet. Agents should add items here when they encounte
 - **Task K-2 completed successfully**
 - **Next step**: Task K-3 (Bot slash commands) or Task A-2 (Supabase migrations)
 
+### 2026-05-23 — Next.js Dashboard & AI Mapping (Kiro)
+
+- ✅ Initialized Next.js 14 dashboard with App Router:
+  - Created `dashboard/` directory with complete project structure
+  - Configured TypeScript, Tailwind CSS, and PostCSS
+  - Set up Supabase client for browser-side operations
+  - Created environment template (`.env.local.example`)
+- ✅ Implemented AI similarity algorithm (`src/lib/similarity.ts` - 240 lines):
+  - Jaro-Winkler text similarity implementation
+  - Text normalization (lowercase, special char removal)
+  - Weighted scoring system:
+    - Name similarity: 50%
+    - Description similarity: 30%
+    - Tag similarity: 20%
+  - `findBestMatches()` function for auto-suggesting mappings
+  - Configurable confidence threshold (default: 60%)
+  - Comprehensive Google-style docstrings with examples
+- ✅ Created TypeScript type definitions (`src/types/database.ts`):
+  - `DiscordChannel`, `SocialTarget`, `AIMapping` interfaces
+  - `AIMappingWithRelations` for joined queries
+  - `ProcessedVideo` interface
+  - Matches schema from ARCHITECTURE-SPEC.md
+- ✅ Implemented Targets page (`dashboard/targets/page.tsx` - 230 lines):
+  - View all social media targets
+  - Add new targets with form (platform, URL, name, description)
+  - Auto-triggers AI mapping on target creation:
+    - Fetches all active Discord channels
+    - Calculates similarity scores
+    - Inserts pending mappings above threshold
+  - Delete existing targets
+  - Platform support: TikTok, Instagram, YouTube, Twitter
+- ✅ Implemented Approval page (`dashboard/approval/page.tsx` - 240 lines):
+  - Displays pending AI mapping suggestions
+  - Color-coded confidence scores (green 80%+, yellow 60-80%, orange <60%)
+  - Side-by-side comparison:
+    - Discord channel (name, description, tags)
+    - Social media target (platform, name, description)
+  - AI reasoning display
+  - Approve button (sets status='approved', enables delivery)
+  - Reject button (sets status='rejected', prevents delivery)
+  - Real-time Supabase updates
+- ✅ Created reusable UI components:
+  - `Button.tsx` with variants (primary, secondary, destructive, ghost)
+  - `Card.tsx` with header, title, and content sections
+  - Fully typed with TypeScript
+- ✅ Created home page with navigation cards
+- ✅ All files under 300-line limit (largest: 240 lines)
+- ✅ Complete documentation in `dashboard/README.md`
+- **Task K-4 completed successfully**
+- **Next step**: Deploy to Vercel or continue with K-5/K-6/K-7
+
+### 2026-05-23 — Git Repository Initialization & GitHub Push (Kiro)
+
+- ✅ Initialized Git repository in project root
+- ✅ Staged all files (39 files, 6332 insertions)
+- ✅ Created initial commit: "feat: initial commit with core automation engine and nextjs dashboard"
+- ✅ Set default branch to `main`
+- ✅ Added remote: https://github.com/hthaihung/TH_Crawl.git
+- ✅ Successfully pushed to GitHub
+- ✅ Updated WORKING-CONTEXT.md with repository information
+- **Codebase now version controlled and backed up on GitHub**
+
 ---
 
 ## 🔗 Quick Reference
 
 | Resource | Location |
 |----------|----------|
+| GitHub Repository | [https://github.com/hthaihung/TH_Crawl.git](https://github.com/hthaihung/TH_Crawl.git) |
 | Coding Rules | [`RULES.md`](file:///d:/desktop_file/Project/CrawlStory/RULES.md) |
 | Architecture | [`ARCHITECTURE-SPEC.md`](file:///d:/desktop_file/Project/CrawlStory/ARCHITECTURE-SPEC.md) |
 | Python Worker | `src/` ✅ |
-| Next.js Dashboard | `dashboard/` _(not yet created)_ |
+| Next.js Dashboard | `dashboard/` ✅ |
 | Supabase Migrations | `supabase/migrations/` _(not yet created)_ |
 | Environment Template | `.env.example` ✅ |
