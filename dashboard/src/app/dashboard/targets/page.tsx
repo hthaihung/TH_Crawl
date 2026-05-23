@@ -3,11 +3,11 @@
 import { useState, useEffect } from 'react';
 import { Plus, Trash2, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
-import { supabase } from '../../../lib/supabase';
-import { findBestMatches } from '../../../lib/similarity';
-import type { SocialTarget, DiscordChannel } from '../../../types/database';
-import Button from '../../../components/ui/Button';
-import { Card, CardHeader, CardTitle, CardContent } from '../../../components/ui/Card';
+import { supabase } from '@/lib/supabase';
+import { findBestMatches } from '@/lib/similarity';
+import type { SocialTarget, DiscordChannel } from '@/types/database';
+import Button from '@/components/ui/Button';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 
 const CONFIDENCE_THRESHOLD = parseInt(
   process.env.NEXT_PUBLIC_AI_CONFIDENCE_THRESHOLD || '60'
